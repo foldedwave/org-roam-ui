@@ -485,26 +485,47 @@ This database model won't be supported in the future, please consider upgrading.
   "Get the cites and links tables as rows from the org-roam db.
 Optionally set OLD to t to use the old db model (where the cites
 were in the same table as the links)."
-(if (not old)
+  (if (not old)
+      (let ((links (org-roam-db-query
+                    `[:select [links:source
+                               links:dest
+                               links:type]
+                      :from links
+                      :where (or
+                              (= links:type "id")
+                              (= links:type "denote"))])))
+        (seq-filter #'identity (seq-map #'org-roam-ui--process-link links)))
+    ;; Left outer join on refs means any id link (or cite link without a
+    ;; corresponding node) will have 'nil for the `refs:node-id' value. Any
+    ;; cite link where a node has that `:ROAM_REFS:' will have a value.
     (org-roam-db-query
-     `[:select  [links:source
-                 links:dest
-                 links:type]
+     `[:select [links:source
+                links:dest
+                links:type
+                refs:node-id]
        :from links
-       :where (= links:type "id")])
-  ;; Left outer join on refs means any id link (or cite link without a
-  ;; corresponding node) will have 'nil for the `refs:node-id' value. Any
-  ;; cite link where a node has that `:ROAM_REFS:' will have a value.
-  (org-roam-db-query
-   `[:select [links:source
-              links:dest
-              links:type
-              refs:node-id]
-     :from links
-     :left :outer :join refs :on (= links:dest refs:ref)
-     :where (or
-             (= links:type "id")
-             (like links:type "%cite%"))])))
+       :left :outer :join refs :on (= links:dest refs:ref)
+       :where (or
+               (= links:type "id")
+               (like links:type "%cite%"))])))
+
+(defun org-roam-ui--process-link (link)
+  "Process a LINK to make it compatible with org-roam-ui format."
+  (pcase-let ((`(,source ,dest ,type) link))
+    (cond
+     ((string= type "denote")
+      (when-let ((file-id (org-roam-ui--denote-id-to-file-id dest)))
+        (list source file-id "id")))
+     (t link))))
+
+(defun org-roam-ui--denote-id-to-file-id (denote-id)
+  "Convert a DENOTE-ID to the corresponding org-roam file ID."
+  (car (car (org-roam-db-query
+             [:select [nodes:id]
+              :from nodes
+              :where (like nodes:file $s1)
+              :limit 1]
+             (concat "%" denote-id "%")))))
 
 (defun org-roam-ui--get-cites ()
   "Get the citations when using the new db-model."
